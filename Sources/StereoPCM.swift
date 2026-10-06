@@ -18,6 +18,14 @@ func aggregateCaptureMatchesTap(tapRate: Double, aggregateInputRate: Double) -> 
     return abs(tapRate - aggregateInputRate) < 0.5
 }
 
+/// Cubic perceptual curve: volume 0...100 maps to gain (v/100)^3; muted is silence.
+@inline(__always)
+func perceptualGain(volume: Int32, muted: Bool) -> Float {
+    if muted { return 0 }
+    let linear = Float(max(0, min(100, volume))) / 100
+    return linear * linear * linear
+}
+
 /// Applies gain while converting between interleaved and planar stereo Float32 buffers.
 /// For interleaved input/output, both channel pointers refer to the same storage.
 @inline(__always)
@@ -31,10 +39,33 @@ func renderStereoFloat32(
     inputInterleaved: Bool,
     outputInterleaved: Bool
 ) -> StereoRenderMetrics {
+    renderStereoFloat32(
+        inputLeft: inputLeft, inputRight: inputRight,
+        outputLeft: outputLeft, outputRight: outputRight,
+        frameCount: frameCount, startGain: gain, endGain: gain,
+        inputInterleaved: inputInterleaved, outputInterleaved: outputInterleaved
+    )
+}
+
+/// Same as above, ramping gain linearly from startGain (first frame) to endGain (last frame).
+@inline(__always)
+func renderStereoFloat32(
+    inputLeft: UnsafePointer<Float>,
+    inputRight: UnsafePointer<Float>,
+    outputLeft: UnsafeMutablePointer<Float>,
+    outputRight: UnsafeMutablePointer<Float>,
+    frameCount: Int,
+    startGain: Float,
+    endGain: Float,
+    inputInterleaved: Bool,
+    outputInterleaved: Bool
+) -> StereoRenderMetrics {
     guard frameCount > 0 else { return StereoRenderMetrics(inputPeak: 0, outputPeak: 0) }
     var inputPeak: Float = 0
     var outputPeak: Float = 0
+    let step = frameCount > 1 ? (endGain - startGain) / Float(frameCount - 1) : 0
     for frame in 0..<frameCount {
+        let gain = frame == frameCount - 1 ? endGain : startGain + step * Float(frame)
         let inputIndex = inputInterleaved ? frame * 2 : frame
         let outputIndex = outputInterleaved ? frame * 2 : frame
         let inputL = inputLeft[inputIndex]

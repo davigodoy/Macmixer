@@ -13,15 +13,3 @@
 .env
 .env.*
 .DS_Store
-
-# Stray local directories from previous shell commands
-/--sdk/
-/-c/
-/-fobjc-arc/
-/-framework/
-/-o/
-/AVFAudio/
-/Foundation/
-/build+xcrun/
-/clang/
-/macosx/

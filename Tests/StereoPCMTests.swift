@@ -12,6 +12,8 @@ struct StereoPCMTests {
         testInterleavedGainAndMute()
         testPlanarToInterleaved()
         testInterleavedToPlanar()
+        testGainRamp()
+        testPerceptualGain()
         testAggregateSampleRateValidation()
         testNativeRateConversion()
         testHelperProcessGrouping()
@@ -89,6 +91,35 @@ struct StereoPCMTests {
             }
         }
         expect(left == [0.2, 0.6] && right == [-0.4, -0.8], "interleaved to planar conversion")
+    }
+
+    private static func testGainRamp() {
+        let frames = 64
+        let input = [Float](repeating: 1, count: frames * 2)
+        var output = [Float](repeating: 9, count: frames * 2)
+        _ = input.withUnsafeBufferPointer { source in
+            output.withUnsafeMutableBufferPointer { destination in
+                renderStereoFloat32(
+                    inputLeft: source.baseAddress!, inputRight: source.baseAddress!,
+                    outputLeft: destination.baseAddress!, outputRight: destination.baseAddress!,
+                    frameCount: frames, startGain: 0, endGain: 1,
+                    inputInterleaved: true, outputInterleaved: true
+                )
+            }
+        }
+        expect(abs(output[0]) < 0.0001 && abs(output[1]) < 0.0001, "ramp starts at startGain")
+        expect(abs(output[(frames - 1) * 2] - 1) < 0.0001 && abs(output[(frames - 1) * 2 + 1] - 1) < 0.0001, "ramp ends at endGain")
+        for frame in 1..<frames {
+            expect(output[frame * 2] > output[(frame - 1) * 2], "ramp is monotonically increasing")
+        }
+    }
+
+    private static func testPerceptualGain() {
+        expect(perceptualGain(volume: 100, muted: false) == 1, "full volume is unity")
+        expect(perceptualGain(volume: 0, muted: false) == 0, "zero volume is silence")
+        expect(perceptualGain(volume: 100, muted: true) == 0, "mute is silence")
+        expect(abs(perceptualGain(volume: 50, muted: false) - 0.125) < 0.0001, "cubic curve at 50%")
+        expect(perceptualGain(volume: 500, muted: false) == 1 && perceptualGain(volume: -5, muted: false) == 0, "gain is clamped")
     }
 
     private static func testAggregateSampleRateValidation() {

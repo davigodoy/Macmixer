@@ -55,6 +55,12 @@ private struct AudioFormatRead {
     let status: OSStatus
 }
 
+let supportedBrowsers = [
+    (bundleID: "com.apple.Safari", name: "Safari"), (bundleID: "com.google.Chrome", name: "Chrome"),
+    (bundleID: "com.brave.Browser", name: "Brave"), (bundleID: "com.microsoft.edgemac", name: "Edge")
+]
+let supportedBrowserBundleIDs = Set(supportedBrowsers.map(\.bundleID))
+
 private let mixerLogger = Logger(subsystem: "com.codex.mixer", category: "audio")
 
 @MainActor
@@ -69,6 +75,7 @@ final class MixerModel: ObservableObject {
     @Published private(set) var browserAccessibilityTrusted = false
     @Published private(set) var browsersRunning = false
     @Published var otherAppsExpanded = false
+    private var isPopoverVisible = false
     private var popoverLayoutDiagnostic: String?
 
     @Published private var savedSettings: [String: AppAudioSettings] = [:]
@@ -86,6 +93,8 @@ final class MixerModel: ObservableObject {
     private var forceRetryPending = false
     private var isStopped = false
     private var lastDiagnosticWrite = Date.distantPast
+    private var pendingSaveTask: Task<Void, Never>?
+    private static let diagnosticTimestampFormatter = ISO8601DateFormatter()
     private let diagnosticsURL = FileManager.default.urls(for: .libraryDirectory, in: .userDomainMask)[0]
         .appendingPathComponent("Logs/Mixer/Mixer-diagnostics.txt")
     private var defaultOutputUID: String?
@@ -95,11 +104,15 @@ final class MixerModel: ObservableObject {
            let cache = try? JSONDecoder().decode(AudioSourceMetadataCache.self, from: data) { sourceMetadataCache = cache }
         if let data = UserDefaults.standard.data(forKey: "Mixer.appSettings"),
            let decoded = try? JSONDecoder().decode([String: AppAudioSettings].self, from: data) {
-            savedSettings = decoded
+            savedSettings = decoded.filter { !$0.key.hasPrefix("pid-") && $0.value != AppAudioSettings() }
         }
     }
 
-    var footerText: String { "Ajustes aplicados por app" }
+    func setPopoverVisible(_ visible: Bool) {
+        guard isPopoverVisible != visible else { return }
+        isPopoverVisible = visible
+        if visible { refreshNow() }
+    }
 
     func start() {
         guard refreshTask == nil else { return }
@@ -109,7 +122,8 @@ final class MixerModel: ObservableObject {
         startSourceMetadataPolling()
         refreshTask = Task { [weak self] in
             while !Task.isCancelled {
-                try? await Task.sleep(nanoseconds: 750_000_000)
+                let visible = self?.isPopoverVisible ?? true
+                try? await Task.sleep(nanoseconds: visible ? 750_000_000 : 5_000_000_000)
                 guard !Task.isCancelled else { break }
                 self?.refreshNow()
             }
@@ -118,6 +132,7 @@ final class MixerModel: ObservableObject {
 
     func stop() {
         isStopped = true
+        flushPendingSave()
         refreshTask?.cancel()
         refreshTask = nil
         sourceMetadataTask?.cancel()
@@ -146,10 +161,7 @@ final class MixerModel: ObservableObject {
     private func startSourceMetadataPolling() {
         guard sourceMetadataTask == nil else { return }
         sourceMetadataTask = Task { [weak self] in
-            let supported = [
-                ("com.apple.Safari", "Safari"), ("com.google.Chrome", "Chrome"),
-                ("com.brave.Browser", "Brave"), ("com.microsoft.edgemac", "Edge")
-            ]
+            let supported = supportedBrowsers
             while !Task.isCancelled {
                 let running = NSWorkspace.shared.runningApplications.filter { !$0.isTerminated }
                 let browserTargets = supported.compactMap { bundle, name -> (String, String, pid_t)? in
@@ -195,7 +207,8 @@ final class MixerModel: ObservableObject {
                     model.applySourceMetadataToAudioRows()
                     model.updateDiagnostics()
                 }
-                try? await Task.sleep(nanoseconds: 1_000_000_000)
+                let visible = self?.isPopoverVisible ?? true
+                try? await Task.sleep(nanoseconds: visible ? 1_000_000_000 : 5_000_000_000)
             }
         }
     }
@@ -348,19 +361,20 @@ final class MixerModel: ObservableObject {
             if let record = sessions[app.id], record.signature == signature {
                 if let session = record.session {
                     if session.hasRuntimeLayoutIssue() {
+                        let diagnostic = session.diagnosticLine(
+                            appID: app.id,
+                            processPIDs: app.processPIDs,
+                            processAttributions: app.processAttributions,
+                            targetUID: targetUID ?? "none",
+                            volume: settings.volume,
+                            muted: settings.isMuted
+                        )
                         session.stop()
                         sessions[app.id] = SessionRecord(
                             signature: signature,
                             session: nil,
                             error: String(MixerAudioError.runtimeLayout.rawValue),
-                            diagnostic: session.diagnosticLine(
-                                appID: app.id,
-                                processPIDs: app.processPIDs,
-                                processAttributions: app.processAttributions,
-                                targetUID: targetUID ?? "none",
-                                volume: settings.volume,
-                                muted: settings.isMuted
-                            ),
+                            diagnostic: diagnostic,
                             retryAfter: .distantFuture
                         )
                         mixerLogger.error("Audio buffer layout mismatch; stopped route for \(app.id, privacy: .public)")
@@ -486,7 +500,9 @@ final class MixerModel: ObservableObject {
     }
 
     private func updateDiagnostics() {
-        let timestamp = ISO8601DateFormatter().string(from: Date())
+        let now = Date()
+        let shouldWrite = now.timeIntervalSince(lastDiagnosticWrite) >= 1
+        let timestamp = Self.diagnosticTimestampFormatter.string(from: now)
         let outputNames = outputs.map(\.name).joined(separator: ", ")
         let info = Bundle.main.infoDictionary ?? [:]
         let version = info["CFBundleShortVersionString"] as? String ?? "?"
@@ -512,7 +528,8 @@ final class MixerModel: ObservableObject {
                     processAttributions: app.processAttributions,
                     targetUID: targetUID,
                     volume: settings.volume,
-                    muted: settings.isMuted
+                    muted: settings.isMuted,
+                    resetPeaks: shouldWrite
                 ))
             } else if let route, let diagnostic = route.diagnostic {
                 lines.append("app=\(app.name) id=\(app.id) pids=\(app.processPIDs) processes=[\(attributionSummary(app.processAttributions))] target=\(targetUID) gain=\(settings.isMuted ? 0 : settings.volume)% status=FAILED \(diagnostic)")
@@ -530,8 +547,7 @@ final class MixerModel: ObservableObject {
         let text = lines.joined(separator: "\n") + "\n"
         diagnosticText = text
 
-        let now = Date()
-        guard now.timeIntervalSince(lastDiagnosticWrite) >= 1 else { return }
+        guard shouldWrite else { return }
         lastDiagnosticWrite = now
         let url = diagnosticsURL
         DispatchQueue.global(qos: .utility).async {
@@ -550,8 +566,20 @@ final class MixerModel: ObservableObject {
 
     private func save(_ value: AppAudioSettings, for id: String) {
         var updated = savedSettings
-        updated[id] = value
+        if value == AppAudioSettings() { updated.removeValue(forKey: id) } else { updated[id] = value }
         savedSettings = updated
+        pendingSaveTask?.cancel()
+        pendingSaveTask = Task { [weak self] in
+            try? await Task.sleep(nanoseconds: 300_000_000)
+            guard !Task.isCancelled else { return }
+            self?.flushPendingSave()
+        }
+    }
+
+    private func flushPendingSave() {
+        guard pendingSaveTask != nil else { return }
+        pendingSaveTask?.cancel()
+        pendingSaveTask = nil
         if let data = try? JSONEncoder().encode(savedSettings) {
             UserDefaults.standard.set(data, forKey: "Mixer.appSettings")
         }
@@ -877,6 +905,7 @@ private struct AudioRouteFailure: Error {
 private struct RenderState {
     var volume: Int32
     var muted: Int32
+    var currentGain: Float
     var layoutIssue: Int32
     var callbackCount: Int32
     var captureCallbackCount: Int32
@@ -1024,7 +1053,7 @@ private final class StereoFloatRingBuffer {
     func render(
         frameCount: Int,
         outputData: UnsafeMutablePointer<AudioBufferList>,
-        gain: Float,
+        targetGain: Float,
         state: UnsafeMutablePointer<RenderState>
     ) -> StereoRenderMetrics? {
         let buffers = UnsafeMutableAudioBufferListPointer(outputData)
@@ -1065,7 +1094,10 @@ private final class StereoFloatRingBuffer {
         let count = min(frameCount, available)
         var inputPeak: Float = 0
         var outputPeak: Float = 0
+        let startGain = state.pointee.currentGain
+        let step = count > 1 ? (targetGain - startGain) / Float(count - 1) : 0
         for frame in 0..<count {
+            let gain = frame == count - 1 ? targetGain : startGain + step * Float(frame)
             let ringIndex = (Int(read &+ Int64(frame)) & mask) * 2
             let inputLeft = samples[ringIndex]
             let inputRight = samples[ringIndex + 1]
@@ -1079,7 +1111,10 @@ private final class StereoFloatRingBuffer {
             left[outputIndex] = outputLeft
             right[interleaved ? outputIndex + 1 : outputIndex] = outputRight
         }
-        if count > 0 { _ = OSAtomicAdd64Barrier(Int64(count), &readFrame) }
+        if count > 0 {
+            state.pointee.currentGain = targetGain
+            _ = OSAtomicAdd64Barrier(Int64(count), &readFrame)
+        }
         if count < frameCount {
             _ = OSAtomicAdd32Barrier(Int32(min(frameCount - count, Int(Int32.max))), &underflowFrames)
         }
@@ -1181,11 +1216,11 @@ private final class AudioEngineOutput {
             _ = OSAtomicIncrement32Barrier(&renderState.pointee.outputSourceCallbackCount)
             let currentVolume = OSAtomicAdd32Barrier(0, &renderState.pointee.volume)
             let isMuted = OSAtomicAdd32Barrier(0, &renderState.pointee.muted) != 0
-            let gain = isMuted ? 0 : Float(max(0, min(100, currentVolume))) / 100.0
+            let gain = perceptualGain(volume: currentVolume, muted: isMuted)
             guard ring.render(
                 frameCount: Int(frameCount),
                 outputData: outputData,
-                gain: gain,
+                targetGain: gain,
                 state: renderState
             ) != nil else { return noErr }
             return noErr
@@ -1285,7 +1320,7 @@ private let mixerIOProc: AudioDeviceIOProc = { _, _, inputData, _, outputData, _
     _ = OSAtomicIncrement32Barrier(&state.pointee.callbackCount)
     let volume = OSAtomicAdd32Barrier(0, &state.pointee.volume)
     let muted = OSAtomicAdd32Barrier(0, &state.pointee.muted)
-    let gain = muted == 0 ? Float(max(0, min(100, volume))) / 100.0 : 0.0
+    let gain = perceptualGain(volume: volume, muted: muted != 0)
     let outputBuffers = UnsafeMutableAudioBufferListPointer(outputData)
     for outputIndex in 0..<outputBuffers.count {
         let output = outputBuffers[outputIndex]
@@ -1338,10 +1373,12 @@ private let mixerIOProc: AudioDeviceIOProc = { _, _, inputData, _, outputData, _
         outputLeft: UnsafeMutablePointer(mutating: destination.left),
         outputRight: UnsafeMutablePointer(mutating: destination.right),
         frameCount: source.frameCount,
-        gain: gain,
+        startGain: state.pointee.currentGain,
+        endGain: gain,
         inputInterleaved: source.interleaved,
         outputInterleaved: destination.interleaved
     )
+    state.pointee.currentGain = gain
     atomicStore(Int32(min(source.frameCount, Int(Int32.max))), to: &state.pointee.inputFrames)
     atomicStore(Int32(min(destination.frameCount, Int(Int32.max))), to: &state.pointee.outputFrames)
     _ = OSAtomicAdd32Barrier(Int32(min(source.frameCount, Int(Int32.max))), &state.pointee.renderedFrames)
@@ -1426,7 +1463,8 @@ private final class AudioRouteSession {
         }
         renderState = .allocate(capacity: 1)
         renderState.initialize(to: RenderState(
-            volume: Int32(volume), muted: muted ? 1 : 0, layoutIssue: 0,
+            volume: Int32(volume), muted: muted ? 1 : 0,
+            currentGain: perceptualGain(volume: Int32(volume), muted: muted), layoutIssue: 0,
             callbackCount: 0, captureCallbackCount: 0, outputSourceCallbackCount: 0,
             emptyInputCallbacks: 0, renderedFrames: 0,
             inputPeakMicros: 0, outputPeakMicros: 0,
@@ -1680,7 +1718,7 @@ private final class AudioRouteSession {
         OSAtomicAdd32Barrier(0, &renderState.pointee.layoutIssue) != 0
     }
 
-    func diagnosticLine(appID: String, processPIDs: [pid_t], processAttributions: [AudioProcessAttribution], targetUID: String, volume: Int, muted: Bool) -> String {
+    func diagnosticLine(appID: String, processPIDs: [pid_t], processAttributions: [AudioProcessAttribution], targetUID: String, volume: Int, muted: Bool, resetPeaks: Bool = false) -> String {
         let atomicVolume = OSAtomicAdd32Barrier(0, &renderState.pointee.volume)
         let atomicMuted = OSAtomicAdd32Barrier(0, &renderState.pointee.muted) != 0
         let callbacks = OSAtomicAdd32Barrier(0, &renderState.pointee.callbackCount)
@@ -1688,8 +1726,10 @@ private final class AudioRouteSession {
         let outputSourceCallbacks = OSAtomicAdd32Barrier(0, &renderState.pointee.outputSourceCallbackCount)
         let emptyCallbacks = OSAtomicAdd32Barrier(0, &renderState.pointee.emptyInputCallbacks)
         let frames = OSAtomicAdd32Barrier(0, &renderState.pointee.renderedFrames)
-        let inputPeak = Float(atomicTakeAndReset(&renderState.pointee.inputPeakMicros)) / 1_000_000
-        let outputPeak = Float(atomicTakeAndReset(&renderState.pointee.outputPeakMicros)) / 1_000_000
+        let inputPeakMicros = resetPeaks ? atomicTakeAndReset(&renderState.pointee.inputPeakMicros) : OSAtomicAdd32Barrier(0, &renderState.pointee.inputPeakMicros)
+        let outputPeakMicros = resetPeaks ? atomicTakeAndReset(&renderState.pointee.outputPeakMicros) : OSAtomicAdd32Barrier(0, &renderState.pointee.outputPeakMicros)
+        let inputPeak = Float(inputPeakMicros) / 1_000_000
+        let outputPeak = Float(outputPeakMicros) / 1_000_000
         let inputBuffers = OSAtomicAdd32Barrier(0, &renderState.pointee.inputBufferCount)
         let outputBuffers = OSAtomicAdd32Barrier(0, &renderState.pointee.outputBufferCount)
         let inputChannels = OSAtomicAdd32Barrier(0, &renderState.pointee.inputChannels)

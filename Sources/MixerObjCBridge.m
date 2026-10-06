@@ -308,5 +308,3 @@ NSArray<NSDictionary *> *MXBReadMediaRemoteClients(NSArray<NSDictionary *> *clie
     } @catch (NSException *exception) { }
     return records;
 }
-
-// Bind the command to the inspected player path, never to an unqualified media key.

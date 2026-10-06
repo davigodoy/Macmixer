@@ -264,7 +264,11 @@ struct MixerPopover: View {
             }
         }
         .frame(width: 356)
-        .onAppear { loginItem.refresh() }
+        .onAppear {
+            loginItem.refresh()
+            model.setPopoverVisible(true)
+        }
+        .onDisappear { model.setPopoverVisible(false) }
         .onReceive(NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)) { _ in
             loginItem.refresh()
         }
@@ -351,12 +355,14 @@ private struct AppAudioRow: View {
         guard let source = app.sourceMetadata else { return app.name }
         return source.browserBundleID == nil ? source.summary : source.label
     }
+    private static var browserIcons: [String: NSImage] = [:]
     private var sourceIcon: NSImage {
-        if let bundleID = app.sourceMetadata?.browserBundleID,
-           let url = NSWorkspace.shared.urlForApplication(withBundleIdentifier: bundleID) {
-            return NSWorkspace.shared.icon(forFile: url.path)
-        }
-        return app.icon
+        guard let bundleID = app.sourceMetadata?.browserBundleID else { return app.icon }
+        if let cached = Self.browserIcons[bundleID] { return cached }
+        guard let url = NSWorkspace.shared.urlForApplication(withBundleIdentifier: bundleID) else { return app.icon }
+        let icon = NSWorkspace.shared.icon(forFile: url.path)
+        Self.browserIcons[bundleID] = icon
+        return icon
     }
 
     var body: some View {
@@ -390,7 +396,7 @@ private struct AppAudioRow: View {
                         MarqueeText(text: app.name)
                             .frame(maxWidth: .infinity)
                         if app.isProducingAudio {
-                            Text(model.shouldRequestAccessibilityPermission && (app.id.hasPrefix("pid-") || app.id.contains("Chrome") || app.id.contains("Safari")) ? "Título da fonte depende de Acessibilidade" : "Título da fonte indisponível")
+                            Text(model.shouldRequestAccessibilityPermission && (app.id.hasPrefix("pid-") || supportedBrowserBundleIDs.contains(app.id)) ? "Título da fonte depende de Acessibilidade" : "Título da fonte indisponível")
                                 .font(.system(size: 10))
                                 .foregroundStyle(.secondary)
                         } else {
