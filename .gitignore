@@ -1,0 +1,27 @@
+# Local builds, signing material, tests and diagnostics
+/build/
+/work/
+/outputs/
+/.swiftpm/
+/DerivedData/
+*.dSYM/
+*.log
+*.keychain*
+*.pem
+*.p12
+*.pfx
+.env
+.env.*
+.DS_Store
+
+# Stray local directories from previous shell commands
+/--sdk/
+/-c/
+/-fobjc-arc/
+/-framework/
+/-o/
+/AVFAudio/
+/Foundation/
+/build+xcrun/
+/clang/
+/macosx/
