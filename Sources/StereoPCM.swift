@@ -18,12 +18,12 @@ func aggregateCaptureMatchesTap(tapRate: Double, aggregateInputRate: Double) -> 
     return abs(tapRate - aggregateInputRate) < 0.5
 }
 
-/// Cubic perceptual curve: volume 0...100 maps to gain (v/100)^3; muted is silence.
+/// Quadratic perceptual curve: volume 0...100 maps to gain (v/100)^2; muted is silence.
 @inline(__always)
 func perceptualGain(volume: Int32, muted: Bool) -> Float {
     if muted { return 0 }
     let linear = Float(max(0, min(100, volume))) / 100
-    return linear * linear * linear
+    return linear * linear
 }
 
 /// Applies gain while converting between interleaved and planar stereo Float32 buffers.

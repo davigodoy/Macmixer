@@ -1,10 +1,10 @@
-# Mixer 0.15
+# Mixer 0.16
 
 Mixer de áudio nativo para macOS, na barra de menus. Controla volume, silêncio e saída de áudio por aplicativo.
 
 ## Download
 
-A versão compilada para Apple Silicon está em [dist/Mixer-0.15-macos-arm64.zip](dist/Mixer-0.15-macos-arm64.zip). Extraia e mova `Mixer.app` para `/Applications`.
+A versão compilada para Apple Silicon está em [dist/Mixer-0.16-macos-arm64.zip](dist/Mixer-0.16-macos-arm64.zip). Extraia e mova `Mixer.app` para `/Applications`.
 
 O ZIP usa assinatura ad hoc e não é notarizado. O macOS pode solicitar aprovação para abrir o aplicativo.
 

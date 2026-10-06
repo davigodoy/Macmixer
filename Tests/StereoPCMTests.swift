@@ -118,7 +118,7 @@ struct StereoPCMTests {
         expect(perceptualGain(volume: 100, muted: false) == 1, "full volume is unity")
         expect(perceptualGain(volume: 0, muted: false) == 0, "zero volume is silence")
         expect(perceptualGain(volume: 100, muted: true) == 0, "mute is silence")
-        expect(abs(perceptualGain(volume: 50, muted: false) - 0.125) < 0.0001, "cubic curve at 50%")
+        expect(abs(perceptualGain(volume: 50, muted: false) - 0.25) < 0.0001, "quadratic curve at 50%")
         expect(perceptualGain(volume: 500, muted: false) == 1 && perceptualGain(volume: -5, muted: false) == 0, "gain is clamped")
     }
 

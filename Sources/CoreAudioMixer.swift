@@ -691,7 +691,9 @@ private struct CoreAudioCatalog {
             guard !streams.isEmpty,
                   let uid = readString(object: deviceID, selector: kAudioDevicePropertyDeviceUID),
                   !uid.hasPrefix("com.codex.mixer."),
-                  let name = readString(object: deviceID, selector: kAudioObjectPropertyName) else { return nil }
+                  !uid.hasPrefix("CADefaultDeviceAggregate"),
+                  let name = readString(object: deviceID, selector: kAudioObjectPropertyName),
+                  !name.hasPrefix("CADefaultDeviceAggregate") else { return nil }
             return AudioOutput(uid: uid, name: name)
         }
         .sorted { $0.name.localizedStandardCompare($1.name) == .orderedAscending }
